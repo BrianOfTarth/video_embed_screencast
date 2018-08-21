@@ -1,0 +1,199 @@
+<?php
+
+/**
+ * @file
+ * Add a handler for screencast videos to Video Embed Field.
+ * @see video_embed_field.api.php for more documentation.
+ */
+
+/**
+ * Implements hook_video_embed_handler_info().
+ */
+function video_embed_screencast_video_embed_handler_info() {
+  $handlers = array();
+  $handlers['screencast'] = array(
+    'title' => 'Screencast.com Video',
+    'function' => 'video_embed_screencast_handle_video',
+    'thumbnail_function' => 'video_embed_screencast_handle_thumbnail',
+    'thumbnail_default' => drupal_get_path('module', 'video_embed_screencast') . '/img/screencast.jpg',
+    'form' => 'video_embed_screencast_form',
+    'form_validate' => 'video_embed_field_handler_screencast_form_validate',
+    'domains' => array(
+      'screencast.com',
+    ),
+    'defaults' => array(
+      'width' => 960,
+      'height' => 540,
+      'class' => '',
+    ),
+  );
+
+  return $handlers;
+}
+
+/**
+ * Implements hook_video_embed_handler_info_alter().
+ * This moves Screencast.com to the top of the provider list
+ */
+function video_embed_screencast_video_embed_handler_info_alter(&$info) {
+  if(!empty($info['screencast'])) {
+    $screencast = $info['screencast'];
+    unset($info['screencast']);
+    $info = array('screencast' => $screencast) + $info;
+  }
+}
+
+/**
+ * Form to configure out video settings.
+ *
+ * @param array $defaults
+ *   Values for your provider.
+ *
+ * @return array
+ *   A form as defined by form API.
+ */
+function video_embed_screencast_form($defaults) {
+  $form = array();
+  // Element for the width of the player.
+  $form['width'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Player Width'),
+    '#description' => t('The width of the player.'),
+    '#default_value' => $defaults['width'],
+  );
+
+  // Element for the height of the player.
+  $form['height'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Player Height'),
+    '#description' => t('The height of the player.'),
+    '#default_value' => $defaults['height'],
+  );
+
+  $form['class'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Player CSS class'),
+    '#description' => t('CSS class to add to the player'),
+    '#default_value' => $defaults['class'],
+  );
+
+  return $form;
+}
+
+/**
+ * Validates the form elements for the Screencast configuration form.
+ */
+function video_embed_field_handler_screencast_form_validate($element, &$form_state, $form) {
+  video_embed_field_validate_dimensions($element);
+}
+
+/**
+ * Handler for Screencast.com videos.
+ *
+ * @param string $url
+ *   The video URL.
+ * @param array $settings
+ *   The settings array.
+ *
+ * @return string|bool
+ *   The video iframe, or FALSE in case the ID can't be retrieved from the URL.
+ */
+function video_embed_screencast_handle_video($url, $settings) {
+  $id = _video_embed_screencast_get_video_id($url);
+
+  if ($id) {
+    // Our embed code.
+    $embed='<iframe class="@class" src="//www.screencast.com/users/!id/embed" width="@width" height="@height" frameborder="0" allowfullscreen="allowfullscreen"></iframe> ';
+    // Use format_string to replace our placeholders with the settings values.
+    $embed = format_string($embed, array(
+      '!id' => $id,
+      '@width' => $settings['width'],
+      '@height' => $settings['height'],
+      '@class' => $settings['class'],
+    ));
+
+    $video = array(
+      '#markup' => $embed,
+    );
+    return $video;
+  }
+
+  return FALSE;
+}
+
+/**
+ * Gets the thumbnail url for Screencast.com videos.
+ *
+ * @param string $url
+ *   The video URL.
+ *
+ * @return array
+ *   The video thumbnail information.
+ */
+function video_embed_screencast_handle_thumbnail($url) {
+  $id = _video_embed_screencast_get_video_id($url);
+  $url = sprintf('https://www.screencast.com/users/%s/embed', $id);
+  if(preg_match('/^http(s)?:\/\/(www\.)?(screencast.com)\/(users)\/(?<id>.*)\/embed$/', $url, $matches)){
+    $url = str_replace(" ", "%20", $url);
+    $response = drupal_http_request($url);
+    $response_body = $response->data;
+    if (!empty($response_body)) {
+      // Get image from TSC.mediaInterface.posterSrc = 'GET_VALUE';
+      preg_match("/TSC.mediaInterface.posterSrc = '(?<thumbnail>.*)';/", $response_body, $matches);
+      if (!empty($matches['thumbnail'])) {
+        $idarr = explode("/", $id);
+        $id = end($idarr);
+        $thumb = $matches['thumbnail'];
+        $thumb = str_replace('https','http',$thumb);
+        return array(
+          'id' => $id,
+          'url' => $thumb,
+        );
+      }
+    }
+  }
+  return FALSE;
+}
+
+/**
+ * Helper function to get the Screencast.com video's id.
+ *
+ * @param string $url
+ *   The video URL.
+ *
+ * @return string|bool
+ *   The video ID, or FALSE in case the ID can't be retrieved from the URL.
+ */
+function _video_embed_screencast_get_video_id($url) {
+	//ignore links if not contain screencast domain
+	if(!preg_match('/(screencast.com)\//', $url)){
+	  return FALSE;
+	}
+	if(preg_match('/^http(s)?:\/\/(www\.)?(screencast.com)\/(?<path>users|t|api)\/(?<id>.*)(?<embed>\/embed)?$/', $url, $matches)){
+	  if(!empty($matches['path'])){
+      switch ($matches['path']) {
+        // screencast.com/users/ link type
+        case 'users':
+          return $matches['id'];
+        break;
+        // screencast.com/t/ link type
+        case 't':
+          $response = drupal_http_request($url);
+          $response_body = $response->data;
+          if (!empty($response_body)) {
+            // Get video link <iframe class="embeddedObject src="screencast.com/users/GET_ID">
+            preg_match('/<iframe(.*)? src="http(s)?:\/\/(www\.)?(screencast.com)\/(?<path>users)\/(?<id>.*)(?<embed>\/embed)"/', $response_body, $matches);
+            if(isset($matches['id'])){
+            return $matches['id'];
+            }
+          }
+        break;
+        // screencast.com/media/ link type NOT supported
+        case 'media':
+          return FALSE;
+        break;
+      }
+	  }
+	}
+	return FALSE;
+}
